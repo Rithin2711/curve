@@ -1,7 +1,21 @@
 [flake8]
-exclude = .git,__pycache__,build,dist,venv
-select = E9,F
-max-line-length = 120
+# Max line length aligned with many modern Python projects
+max-line-length = 100
+# Ignore rules (comments not allowed inline for this option)
+# E203: whitespace before ':' (Black compatibility)
+# W503: line break before binary operator (Black compatibility)
+ignore =
+    E203,
+    W503
+exclude =
+    .venv,
+    venv,
+    __pycache__,
+    build,
+    dist,
+    .git,
+    interfaces
+# Per-file ignores; comments must be separate
+# Allow __init__ modules to have docstring-only or minimal content
 per-file-ignores =
-    __init__.py:F401
-max-complexity = 18
+    */__init__.py:F401

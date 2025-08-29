@@ -1,76 +1,119 @@
 import os
 from typing import List, Optional
 
-from fastapi import FastAPI, Depends, HTTPException, status, Path, Query
+from fastapi import Depends, FastAPI, HTTPException, Path, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, EmailStr, Field, PositiveInt
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey, func, Text, desc, UniqueConstraint
-from sqlalchemy.orm import sessionmaker, declarative_base, relationship, Session
+from sqlalchemy import (
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    create_engine,
+    desc,
+    func,
+)
+from sqlalchemy.orm import Session, declarative_base, relationship, sessionmaker
 from dotenv import load_dotenv
 
 # Load environment variables from .env if present
 load_dotenv()
 
+
 # -----------------------------
 # Settings / Configuration
 # -----------------------------
-
 class Settings(BaseModel):
     """Application settings loaded from environment variables."""
+
     APP_NAME: str = "Gravity Curve Backend"
     APP_DESCRIPTION: str = (
-        "FastAPI backend for Gravity Curve game. Manages user profiles, scores, leaderboard, "
-        "and game progress. Provides REST APIs consumed by the frontend."
+        "FastAPI backend for Gravity Curve game. Manages user profiles, scores, "
+        "leaderboard, and game progress. Provides REST APIs consumed by the frontend."
     )
     APP_VERSION: str = "1.0.0"
-    CORS_ALLOW_ORIGINS: List[str] = ["*"]
-    DB_URL: str = Field(default_factory=lambda: os.getenv("DATABASE_URL") or os.getenv("DB_URL") or "sqlite:///./gravity_curve.db")
+    # Parse CORS_ALLOW_ORIGINS from env, support comma-separated string or '*'
+    CORS_ALLOW_ORIGINS: List[str] = Field(
+        default_factory=lambda: (
+            ["*"]
+            if (os.getenv("CORS_ALLOW_ORIGINS", "*").strip() == "*")
+            else [
+                o.strip()
+                for o in os.getenv("CORS_ALLOW_ORIGINS", "*").split(",")
+                if o.strip()
+            ]
+        )
+    )
+    DB_URL: str = Field(
+        default_factory=lambda: os.getenv("DATABASE_URL")
+        or os.getenv("DB_URL")
+        or "sqlite:///./gravity_curve.db"
+    )
     DB_ECHO: bool = (os.getenv("DB_ECHO", "false").lower() == "true")
 
+
 settings = Settings()
+
 
 # -----------------------------
 # Database setup (SQLAlchemy)
 # -----------------------------
-
 Base = declarative_base()
+
 
 # PUBLIC_INTERFACE
 def get_engine_url() -> str:
     """Return the SQLAlchemy engine URL based on environment configuration."""
     url = settings.DB_URL
-    # For SQLite, ensure proper connection args will be provided in session factory creation.
     return url
 
+
+# Create engine; SQLAlchemy 2.x works for both SQLite and Postgres via URL
 engine = create_engine(get_engine_url(), echo=settings.DB_ECHO, future=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
+
 # Dependency to get DB session
 def get_db():
-    """Provide a SQLAlchemy session to request scope."""
+    """Provide a SQLAlchemy session for the request scope."""
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
 
+
 # -----------------------------
 # Models
 # -----------------------------
-
 class User(Base):
+    """User profile model."""
+
     __tablename__ = "users"
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String(255), unique=True, index=True, nullable=False)
     username = Column(String(50), unique=True, index=True, nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
 
     scores = relationship("Score", back_populates="user", cascade="all, delete-orphan")
-    progresses = relationship("GameProgress", back_populates="user", cascade="all, delete-orphan")
+    progresses = relationship(
+        "GameProgress",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
 
 
 class Score(Base):
+    """Score submissions from gameplay."""
+
     __tablename__ = "scores"
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -82,44 +125,53 @@ class Score(Base):
 
     user = relationship("User", back_populates="scores")
 
-    __table_args__ = (
-        # Each submission is independent, but this helps frequent queries
-        {},
-    )
+    __table_args__ = ({},)
 
 
 class GameProgress(Base):
+    """Saved game state per user per level."""
+
     __tablename__ = "game_progress"
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     level = Column(Integer, nullable=False, index=True)
     # JSON stored as text for portability (SQLite/Postgres)
     state_json = Column(Text, nullable=False)
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
-
-    user = relationship("User", back_populates="progresses")
-    __table_args__ = (
-        UniqueConstraint("user_id", "level", name="uq_progress_user_level"),
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
     )
 
-# Create tables on startup (simple approach for demo/scaffold; in prod use migrations)
+    user = relationship("User", back_populates="progresses")
+    __table_args__ = (UniqueConstraint("user_id", "level", name="uq_progress_user_level"),)
+
+
+# Auto-create tables on startup (development convenience)
 Base.metadata.create_all(bind=engine)
+
 
 # -----------------------------
 # Schemas (Pydantic)
 # -----------------------------
-
 class UserCreate(BaseModel):
+    """Request model for creating a user."""
+
     email: EmailStr = Field(..., description="Unique email for the user")
     username: str = Field(..., min_length=3, max_length=50, description="Unique username")
 
 
 class UserUpdate(BaseModel):
+    """Request model for updating a user."""
+
     email: Optional[EmailStr] = Field(None, description="New email")
     username: Optional[str] = Field(None, min_length=3, max_length=50, description="New username")
 
 
 class UserOut(BaseModel):
+    """Response model for user data."""
+
     id: int
     email: EmailStr
     username: str
@@ -130,6 +182,8 @@ class UserOut(BaseModel):
 
 
 class ScoreCreate(BaseModel):
+    """Request model to submit a score."""
+
     user_id: PositiveInt = Field(..., description="User ID who achieved the score")
     level: PositiveInt = Field(..., description="Game level index (1-based)")
     points: int = Field(..., description="Score points awarded")
@@ -138,6 +192,8 @@ class ScoreCreate(BaseModel):
 
 
 class ScoreOut(BaseModel):
+    """Response model for a score."""
+
     id: int
     user_id: int
     level: int
@@ -151,6 +207,8 @@ class ScoreOut(BaseModel):
 
 
 class LeaderboardEntry(BaseModel):
+    """Leaderboard entry item."""
+
     username: str = Field(..., description="Username")
     points: int = Field(..., description="Best points for the level")
     moves: int = Field(..., description="Moves used in the best run")
@@ -160,12 +218,16 @@ class LeaderboardEntry(BaseModel):
 
 
 class ProgressUpsert(BaseModel):
+    """Request model for saving game progress."""
+
     user_id: PositiveInt = Field(..., description="User ID")
     level: PositiveInt = Field(..., description="Level number")
     state_json: str = Field(..., description="Serialized game state (JSON string). Stored as text.")
 
 
 class ProgressOut(BaseModel):
+    """Response model for saved game progress."""
+
     id: int
     user_id: int
     level: int
@@ -179,7 +241,6 @@ class ProgressOut(BaseModel):
 # -----------------------------
 # FastAPI app
 # -----------------------------
-
 openapi_tags = [
     {"name": "health", "description": "Service health and metadata"},
     {"name": "users", "description": "User profile management"},
@@ -204,36 +265,62 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 # -----------------------------
 # Routes
 # -----------------------------
-
 # PUBLIC_INTERFACE
-@app.get("/", tags=["health"], summary="Health check", description="Basic health check for the Gravity Curve backend.")
+@app.get(
+    "/",
+    tags=["health"],
+    summary="Health check",
+    description="Basic health check for the Gravity Curve backend.",
+)
 def health_check():
     """Return a simple health status message."""
     return {"message": "Healthy", "service": settings.APP_NAME, "version": settings.APP_VERSION}
 
+
 # PUBLIC_INTERFACE
-@app.get("/docs/websocket", tags=["websocket-docs"], summary="WebSocket usage notes", description="Provides guidance for potential real-time features. Currently, the backend does not expose WebSocket endpoints, but this route describes how they would be used in the future.")
+@app.get(
+    "/docs/websocket",
+    tags=["websocket-docs"],
+    summary="WebSocket usage notes",
+    description=(
+        "Provides guidance for potential real-time features. Currently, the backend does not "
+        "expose WebSocket endpoints, but this route describes how they would be used in the future."
+    ),
+)
 def websocket_docs():
     """Return documentation for potential WebSocket usage (placeholder)."""
     return {
         "websocket": {
             "status": "not-implemented",
-            "notes": "This backend currently uses REST only. Future versions may stream live leaderboard updates and game events via WebSockets.",
+            "notes": (
+                "This backend currently uses REST only. Future versions may stream live leaderboard "
+                "updates and game events via WebSockets."
+            ),
             "example_endpoint": "/ws/leaderboard",
             "client_usage": "Use WebSocket API in the frontend to subscribe to events.",
         }
     }
 
-# ---- Users ----
 
+# ---- Users ----
 # PUBLIC_INTERFACE
-@app.post("/users", response_model=UserOut, status_code=status.HTTP_201_CREATED, tags=["users"], summary="Create user", description="Create a new user profile with unique email and username.")
+@app.post(
+    "/users",
+    response_model=UserOut,
+    status_code=status.HTTP_201_CREATED,
+    tags=["users"],
+    summary="Create user",
+    description="Create a new user profile with unique email and username.",
+)
 def create_user(payload: UserCreate, db: Session = Depends(get_db)):
     """Create a new user with unique email and username."""
-    existing = db.query(User).filter((User.email == payload.email) | (User.username == payload.username)).first()
+    existing = db.query(User).filter(
+        (User.email == payload.email) | (User.username == payload.username)
+    ).first()
     if existing:
         raise HTTPException(status_code=409, detail="Email or username already in use")
     user = User(email=str(payload.email).lower(), username=payload.username)
@@ -242,24 +329,52 @@ def create_user(payload: UserCreate, db: Session = Depends(get_db)):
     db.refresh(user)
     return user
 
+
 # PUBLIC_INTERFACE
-@app.get("/users/{user_id}", response_model=UserOut, tags=["users"], summary="Get user by ID", description="Retrieve a user profile by its ID.")
-def get_user(user_id: int = Path(..., description="User ID"), db: Session = Depends(get_db)):
+@app.get(
+    "/users/{user_id}",
+    response_model=UserOut,
+    tags=["users"],
+    summary="Get user by ID",
+    description="Retrieve a user profile by its ID.",
+)
+def get_user(
+    user_id: int = Path(..., description="User ID"),
+    db: Session = Depends(get_db),
+):
     """Get a single user by ID."""
     user = db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     return user
 
+
 # PUBLIC_INTERFACE
-@app.get("/users", response_model=List[UserOut], tags=["users"], summary="List users", description="List users with optional pagination.")
-def list_users(skip: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200), db: Session = Depends(get_db)):
+@app.get(
+    "/users",
+    response_model=List[UserOut],
+    tags=["users"],
+    summary="List users",
+    description="List users with optional pagination.",
+)
+def list_users(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+):
     """List users with pagination."""
     users = db.query(User).order_by(User.id.asc()).offset(skip).limit(limit).all()
     return users
 
+
 # PUBLIC_INTERFACE
-@app.patch("/users/{user_id}", response_model=UserOut, tags=["users"], summary="Update user", description="Update a user's email and/or username.")
+@app.patch(
+    "/users/{user_id}",
+    response_model=UserOut,
+    tags=["users"],
+    summary="Update user",
+    description="Update a user's email and/or username.",
+)
 def update_user(user_id: int, payload: UserUpdate, db: Session = Depends(get_db)):
     """Update user email/username ensuring uniqueness."""
     user = db.get(User, user_id)
@@ -279,8 +394,15 @@ def update_user(user_id: int, payload: UserUpdate, db: Session = Depends(get_db)
     db.refresh(user)
     return user
 
+
 # PUBLIC_INTERFACE
-@app.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["users"], summary="Delete user", description="Delete a user profile and all associated data.")
+@app.delete(
+    "/users/{user_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    tags=["users"],
+    summary="Delete user",
+    description="Delete a user profile and all associated data.",
+)
 def delete_user(user_id: int, db: Session = Depends(get_db)):
     """Delete a user and cascade-delete related scores and progress."""
     user = db.get(User, user_id)
@@ -290,10 +412,17 @@ def delete_user(user_id: int, db: Session = Depends(get_db)):
     db.commit()
     return JSONResponse(status_code=status.HTTP_204_NO_CONTENT, content=None)
 
-# ---- Scores ----
 
+# ---- Scores ----
 # PUBLIC_INTERFACE
-@app.post("/scores", response_model=ScoreOut, status_code=status.HTTP_201_CREATED, tags=["scores"], summary="Submit score", description="Submit a new game score for a user.")
+@app.post(
+    "/scores",
+    response_model=ScoreOut,
+    status_code=status.HTTP_201_CREATED,
+    tags=["scores"],
+    summary="Submit score",
+    description="Submit a new game score for a user.",
+)
 def submit_score(payload: ScoreCreate, db: Session = Depends(get_db)):
     """Submit a score entry."""
     user = db.get(User, payload.user_id)
@@ -311,23 +440,34 @@ def submit_score(payload: ScoreCreate, db: Session = Depends(get_db)):
     db.refresh(score)
     return score
 
+
 # PUBLIC_INTERFACE
-@app.get("/scores/user/{user_id}", response_model=List[ScoreOut], tags=["scores"], summary="Get user scores", description="Retrieve all scores for a specific user, newest first.")
+@app.get(
+    "/scores/user/{user_id}",
+    response_model=List[ScoreOut],
+    tags=["scores"],
+    summary="Get user scores",
+    description="Retrieve all scores for a specific user, newest first.",
+)
 def get_user_scores(user_id: int, db: Session = Depends(get_db)):
     """Retrieve scores for a user."""
     user = db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     scores = (
-        db.query(Score)
-        .filter(Score.user_id == user_id)
-        .order_by(desc(Score.created_at))
-        .all()
+        db.query(Score).filter(Score.user_id == user_id).order_by(desc(Score.created_at)).all()
     )
     return scores
 
+
 # PUBLIC_INTERFACE
-@app.get("/scores/level/{level}", response_model=List[ScoreOut], tags=["scores"], summary="Get level scores", description="Retrieve all scores for a level, sorted by points descending.")
+@app.get(
+    "/scores/level/{level}",
+    response_model=List[ScoreOut],
+    tags=["scores"],
+    summary="Get level scores",
+    description="Retrieve all scores for a level, sorted by points descending.",
+)
 def get_level_scores(level: int, db: Session = Depends(get_db)):
     """Retrieve all scores for a specific level, by points descending."""
     scores = (
@@ -338,21 +478,21 @@ def get_level_scores(level: int, db: Session = Depends(get_db)):
     )
     return scores
 
-# ---- Leaderboard ----
 
+# ---- Leaderboard ----
 # PUBLIC_INTERFACE
 @app.get(
     "/leaderboard/global",
     response_model=List[LeaderboardEntry],
     tags=["leaderboard"],
     summary="Global leaderboard",
-    description="Get global leaderboard across all levels. Uses best score per user per level, ranks by points desc, moves asc, duration asc."
+    description="Get global leaderboard across all levels. Ranks by points desc, moves asc, duration asc.",
 )
-def leaderboard_global(limit: int = Query(50, ge=1, le=200), db: Session = Depends(get_db)):
+def leaderboard_global(
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+):
     """Aggregate top scores across all levels for all users."""
-    # Strategy: pick each score, join user, order by ranking and limit.
-    # For simplicity without window functions portable across sqlite/postgres in ORM:
-    # We will pull top N scores sorted and map to LeaderboardEntry.
     q = (
         db.query(
             User.username,
@@ -363,7 +503,12 @@ def leaderboard_global(limit: int = Query(50, ge=1, le=200), db: Session = Depen
             Score.created_at,
         )
         .join(User, User.id == Score.user_id)
-        .order_by(desc(Score.points), Score.moves.asc(), Score.duration_ms.asc(), Score.created_at.asc())
+        .order_by(
+            desc(Score.points),
+            Score.moves.asc(),
+            Score.duration_ms.asc(),
+            Score.created_at.asc(),
+        )
         .limit(limit)
     )
     rows = q.all()
@@ -379,15 +524,20 @@ def leaderboard_global(limit: int = Query(50, ge=1, le=200), db: Session = Depen
         for r in rows
     ]
 
+
 # PUBLIC_INTERFACE
 @app.get(
     "/leaderboard/level/{level}",
     response_model=List[LeaderboardEntry],
     tags=["leaderboard"],
     summary="Level leaderboard",
-    description="Get leaderboard for a specific level. Ranks by points desc, moves asc, duration asc."
+    description="Get leaderboard for a specific level. Ranks by points desc, moves asc, duration asc.",
 )
-def leaderboard_level(level: int = Path(..., ge=1), limit: int = Query(50, ge=1, le=200), db: Session = Depends(get_db)):
+def leaderboard_level(
+    level: int = Path(..., ge=1),
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+):
     """Top scores for a given level."""
     q = (
         db.query(
@@ -400,7 +550,12 @@ def leaderboard_level(level: int = Path(..., ge=1), limit: int = Query(50, ge=1,
         )
         .join(User, User.id == Score.user_id)
         .filter(Score.level == level)
-        .order_by(desc(Score.points), Score.moves.asc(), Score.duration_ms.asc(), Score.created_at.asc())
+        .order_by(
+            desc(Score.points),
+            Score.moves.asc(),
+            Score.duration_ms.asc(),
+            Score.created_at.asc(),
+        )
         .limit(limit)
     )
     rows = q.all()
@@ -416,15 +571,18 @@ def leaderboard_level(level: int = Path(..., ge=1), limit: int = Query(50, ge=1,
         for r in rows
     ]
 
-# ---- Game Progress ----
 
+# ---- Game Progress ----
 # PUBLIC_INTERFACE
 @app.post(
     "/progress",
     response_model=ProgressOut,
     tags=["progress"],
     summary="Upsert progress",
-    description="Create or update a user's game progress for a level. If progress exists, it is updated; otherwise it's created."
+    description=(
+        "Create or update a user's game progress for a level. If progress exists, it is updated; "
+        "otherwise it's created."
+    ),
 )
 def upsert_progress(payload: ProgressUpsert, db: Session = Depends(get_db)):
     """Create or update game progress for a level."""
@@ -443,12 +601,15 @@ def upsert_progress(payload: ProgressUpsert, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(existing)
         return existing
-    else:
-        rec = GameProgress(user_id=payload.user_id, level=payload.level, state_json=payload.state_json)
-        db.add(rec)
-        db.commit()
-        db.refresh(rec)
-        return rec
+
+    rec = GameProgress(
+        user_id=payload.user_id, level=payload.level, state_json=payload.state_json
+    )
+    db.add(rec)
+    db.commit()
+    db.refresh(rec)
+    return rec
+
 
 # PUBLIC_INTERFACE
 @app.get(
@@ -456,7 +617,7 @@ def upsert_progress(payload: ProgressUpsert, db: Session = Depends(get_db)):
     response_model=ProgressOut,
     tags=["progress"],
     summary="Get progress for level",
-    description="Retrieve a user's saved game progress for a specific level."
+    description="Retrieve a user's saved game progress for a specific level.",
 )
 def get_progress(user_id: int, level: int, db: Session = Depends(get_db)):
     """Get saved progress for a user and level."""
@@ -469,13 +630,14 @@ def get_progress(user_id: int, level: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Progress not found")
     return rec
 
+
 # PUBLIC_INTERFACE
 @app.delete(
     "/progress/{user_id}/{level}",
     status_code=status.HTTP_204_NO_CONTENT,
     tags=["progress"],
     summary="Delete progress for level",
-    description="Delete a user's saved progress for a specific level."
+    description="Delete a user's saved progress for a specific level.",
 )
 def delete_progress(user_id: int, level: int, db: Session = Depends(get_db)):
     """Delete progress for user and level."""

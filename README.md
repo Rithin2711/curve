@@ -8,3 +8,7 @@ Containers:
 
 Start Backend:
 - See curve/Backend/README.md for setup and running instructions.
+
+Notes:
+- The backend exposes REST APIs consumed by the React frontend.
+- Configure CORS via CORS_ALLOW_ORIGINS in curve/Backend/.env to match your frontend origin (e.g., http://localhost:3000).
