@@ -1,10 +1,22 @@
 import os
-from typing import List, Optional
+from typing import List, Optional, Generator
 
-from fastapi import Depends, FastAPI, HTTPException, Path, Query, status
+from fastapi import (
+    Depends,
+    FastAPI,
+    HTTPException,
+    Path,
+    Query,
+    status,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, EmailStr, Field, PositiveInt
+from pydantic import (
+    BaseModel,
+    EmailStr,
+    Field,
+    PositiveInt,
+)
 from sqlalchemy import (
     Column,
     DateTime,
@@ -17,7 +29,12 @@ from sqlalchemy import (
     desc,
     func,
 )
-from sqlalchemy.orm import Session, declarative_base, relationship, sessionmaker
+from sqlalchemy.orm import (
+    Session,
+    declarative_base,
+    relationship,
+    sessionmaker,
+)
 from dotenv import load_dotenv
 
 # Load environment variables from .env if present
@@ -33,14 +50,19 @@ class Settings(BaseModel):
     APP_NAME: str = "Gravity Curve Backend"
     APP_DESCRIPTION: str = (
         "FastAPI backend for Gravity Curve game. Manages user profiles, scores, "
-        "leaderboard, and game progress. Provides REST APIs consumed by the frontend."
+        "leaderboard, and game progress. Provides REST APIs consumed by the "
+        "frontend."
     )
     APP_VERSION: str = "1.0.0"
     # Parse CORS_ALLOW_ORIGINS from env, support comma-separated string or '*'
     CORS_ALLOW_ORIGINS: List[str] = Field(
         default_factory=lambda: (
             ["*"]
-            if (os.getenv("CORS_ALLOW_ORIGINS", "*").strip() == "*")
+            if (
+                os.getenv("CORS_ALLOW_ORIGINS", "*")
+                .strip()
+                == "*"
+            )
             else [
                 o.strip()
                 for o in os.getenv("CORS_ALLOW_ORIGINS", "*").split(",")
@@ -49,9 +71,11 @@ class Settings(BaseModel):
         )
     )
     DB_URL: str = Field(
-        default_factory=lambda: os.getenv("DATABASE_URL")
-        or os.getenv("DB_URL")
-        or "sqlite:///./gravity_curve.db"
+        default_factory=lambda: (
+            os.getenv("DATABASE_URL")
+            or os.getenv("DB_URL")
+            or "sqlite:///./gravity_curve.db"
+        )
     )
     DB_ECHO: bool = (os.getenv("DB_ECHO", "false").lower() == "true")
 
@@ -73,12 +97,27 @@ def get_engine_url() -> str:
 
 
 # Create engine; SQLAlchemy 2.x works for both SQLite and Postgres via URL
-engine = create_engine(get_engine_url(), echo=settings.DB_ECHO, future=True)
-SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+engine = create_engine(
+    get_engine_url(),
+    echo=settings.DB_ECHO,
+    future=True,
+    # For SQLite, ensure thread safety in dev when using Uvicorn reload
+    connect_args=(
+        {"check_same_thread": False}
+        if settings.DB_URL.startswith("sqlite")
+        else {}
+    ),
+)
+SessionLocal = sessionmaker(
+    bind=engine,
+    autoflush=False,
+    autocommit=False,
+    future=True,
+)
 
 
 # Dependency to get DB session
-def get_db():
+def get_db() -> Generator[Session, None, None]:
     """Provide a SQLAlchemy session for the request scope."""
     db = SessionLocal()
     try:
@@ -318,9 +357,14 @@ def websocket_docs():
 )
 def create_user(payload: UserCreate, db: Session = Depends(get_db)):
     """Create a new user with unique email and username."""
-    existing = db.query(User).filter(
-        (User.email == payload.email) | (User.username == payload.username)
-    ).first()
+    existing = (
+        db.query(User)
+        .filter(
+            (User.email == str(payload.email).lower())
+            | (User.username == payload.username)
+        )
+        .first()
+    )
     if existing:
         raise HTTPException(status_code=409, detail="Email or username already in use")
     user = User(email=str(payload.email).lower(), username=payload.username)
@@ -447,7 +491,10 @@ def submit_score(payload: ScoreCreate, db: Session = Depends(get_db)):
     response_model=List[ScoreOut],
     tags=["scores"],
     summary="Get user scores",
-    description="Retrieve all scores for a specific user, newest first.",
+    description=(
+        "Retrieve all scores for a specific user, "
+        "newest first."
+    ),
 )
 def get_user_scores(user_id: int, db: Session = Depends(get_db)):
     """Retrieve scores for a user."""
@@ -455,7 +502,10 @@ def get_user_scores(user_id: int, db: Session = Depends(get_db)):
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     scores = (
-        db.query(Score).filter(Score.user_id == user_id).order_by(desc(Score.created_at)).all()
+        db.query(Score)
+        .filter(Score.user_id == user_id)
+        .order_by(desc(Score.created_at))
+        .all()
     )
     return scores
 
@@ -473,7 +523,11 @@ def get_level_scores(level: int, db: Session = Depends(get_db)):
     scores = (
         db.query(Score)
         .filter(Score.level == level)
-        .order_by(desc(Score.points), Score.moves.asc(), Score.duration_ms.asc())
+        .order_by(
+            desc(Score.points),
+            Score.moves.asc(),
+            Score.duration_ms.asc(),
+        )
         .all()
     )
     return scores
@@ -486,7 +540,10 @@ def get_level_scores(level: int, db: Session = Depends(get_db)):
     response_model=List[LeaderboardEntry],
     tags=["leaderboard"],
     summary="Global leaderboard",
-    description="Get global leaderboard across all levels. Ranks by points desc, moves asc, duration asc.",
+    description=(
+        "Get global leaderboard across all levels. "
+        "Ranks by points desc, moves asc, duration asc."
+    ),
 )
 def leaderboard_global(
     limit: int = Query(50, ge=1, le=200),
@@ -531,7 +588,10 @@ def leaderboard_global(
     response_model=List[LeaderboardEntry],
     tags=["leaderboard"],
     summary="Level leaderboard",
-    description="Get leaderboard for a specific level. Ranks by points desc, moves asc, duration asc.",
+    description=(
+        "Get leaderboard for a specific level. "
+        "Ranks by points desc, moves asc, duration asc."
+    ),
 )
 def leaderboard_level(
     level: int = Path(..., ge=1),
